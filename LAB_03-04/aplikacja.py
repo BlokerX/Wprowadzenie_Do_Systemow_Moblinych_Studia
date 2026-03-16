@@ -63,11 +63,21 @@ class BaseStationSimulator:
 
         # --- WIZUALIZACJA KANAŁÓW ---
         channel_frame = tk.LabelFrame(self.root, text="Stan Kanałów")
-        channel_frame.grid(row=0, column=1, rowspan=2, padx=10, pady=10, sticky="n")
-        self.canvas = tk.Canvas(channel_frame, width=250, height=400, bg="#f0f0f0")
-        self.canvas.pack()
+        channel_frame.grid(row=0, column=1, rowspan=2, padx=10, pady=10, sticky="ns")
+
+        # Kontener dla canvas i paska przewijania
+        canvas_container = tk.Frame(channel_frame)
+        canvas_container.pack(fill="both", expand=True)
+
+        self.canvas = tk.Canvas(canvas_container, width=250, bg="#f0f0f0")
+        scrollbar = ttk.Scrollbar(canvas_container, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
         self.stats_label = tk.Label(channel_frame, text="", justify="left", font=("Courier", 9))
-        self.stats_label.pack(pady=5)
+        self.stats_label.pack(pady=5, side="bottom")
 
         # --- WYKRESY ---
         plot_frame = tk.Frame(self.root)
@@ -135,6 +145,17 @@ class BaseStationSimulator:
         self.is_paused = not self.is_paused
         if not self.is_paused: self.run_loop()
 
+    def _try_assign_call(self, call):
+        """Helper to find a free channel and assign a call."""
+        for i in range(self.p["S"]):
+            if self.channels[i] is None:
+                self.channels[i] = call
+                # If the call was in the queue, remove it
+                if call in self.queue:
+                    self.queue.remove(call)
+                return True
+        return False
+
     def run_loop(self):
         if not self.is_running or self.is_paused: return
         
@@ -158,7 +179,6 @@ class BaseStationSimulator:
 
         for call in current_batch:
             busy_count = sum(1 for c in self.channels if c is not None)
-            assigned = False
             
             # Logika rezerwacji: Odrzuć nowe (O) jeśli przekroczono Sc [cite: 55]
             if call["type"] == "O" and busy_count >= Sc:
@@ -170,25 +190,19 @@ class BaseStationSimulator:
                     self.blocked_O += 1
             else:
                 # Szukaj wolnego kanału
-                for i in range(self.p["S"]):
-                    if self.channels[i] is None:
-                        self.channels[i] = call
-                        assigned = True
-                        break
-                if not assigned:
+                if not self._try_assign_call(call):
                     if call["type"] == "H": self.blocked_H += 1
                     else: self.blocked_O += 1
 
         # 3. Próba przesunięcia z kolejki do zwolnionych kanałów
-        for i in range(self.p["S"]):
+        # Iterate over a copy of the queue as it might be modified
+        for q_call in list(self.queue):
             busy_count = sum(1 for c in self.channels if c is not None)
-            if self.channels[i] is None and self.queue:
-                # Kolejka w systemach mobilnych zwykle dotyczy tylko handoverów lub nowych wg priorytetu
-                q_call = self.queue[0]
-                # Rezerwacja nadal obowiązuje przy wyciąganiu z kolejki
-                if q_call["type"] == "O" and busy_count >= Sc:
-                    continue 
-                self.channels[i] = self.queue.pop(0)
+            # Rezerwacja nadal obowiązuje przy wyciąganiu z kolejki
+            if q_call["type"] == "O" and busy_count >= Sc:
+                continue
+            # If assignment is successful, the helper will remove it from the queue
+            self._try_assign_call(q_call)
 
         # 4. Statystyki krokowe [cite: 105]
         ro = sum(1 for c in self.channels if c is not None) / self.p["S"]
@@ -220,6 +234,9 @@ class BaseStationSimulator:
 
             self.canvas.create_rectangle(x, y, x+180, y+20, fill=color)
             self.canvas.create_text(x+90, y+10, text=txt)
+
+        # Ustawienie regionu przewijania, aby dopasować do zawartości
+        self.canvas.config(scrollregion=self.canvas.bbox("all"))
 
         self.stats_label.config(text=f"Czas: {self.current_time}/{self.p['time']}s\n"
                                      f"Obsłużone: {self.handled_calls}\n"
